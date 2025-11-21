@@ -92,14 +92,22 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-if 'credentials' not in st.session_state:
-    st.session_state.credentials = None
-if 'current_index' not in st.session_state:
-    st.session_state.current_index = 0
-if 'auto_play' not in st.session_state:
-    st.session_state.auto_play = True
-if 'image_urls' not in st.session_state:
-    st.session_state.image_urls = None
+# Initialize ALL session state variables at the start
+def init_session_state():
+    """Initialize all session state variables with defaults."""
+    defaults = {
+        'credentials': None,
+        'current_index': 0,
+        'auto_play': True,
+        'image_urls': None,
+        'credentials_loaded': False
+    }
+    for key, default_value in defaults.items():
+        if key not in st.session_state:
+            st.session_state[key] = default_value
+
+# Call initialization before any other code
+init_session_state()
 
 # Hardcoded Google Drive folder URL
 FOLDER_URL = "https://drive.google.com/drive/folders/1LfSwuD7WxbS0ZdDeGo0hpiviUx6vMhqs?usp=sharing"
@@ -150,9 +158,22 @@ with st.sidebar:
     )
     
     if uploaded_file is not None:
-        credentials_json = uploaded_file.read().decode('utf-8')
-        st.session_state.credentials = credentials_json
-        st.success("✅ Credentials loaded!")
+        try:
+            credentials_json = uploaded_file.read().decode('utf-8')
+            st.session_state.credentials = credentials_json
+            st.session_state.credentials_loaded = True
+            st.success("✅ Credentials loaded!")
+        except Exception as e:
+            st.error(f"❌ Error loading credentials: {str(e)}")
+            st.session_state.credentials = None
+            st.session_state.credentials_loaded = False
+    elif st.session_state.get('credentials_loaded', False):
+        st.info("✅ Credentials already loaded")
+        if st.button("🗑️ Clear Credentials"):
+            st.session_state.credentials = None
+            st.session_state.credentials_loaded = False
+            st.session_state.image_urls = None
+            st.rerun()
     
     st.divider()
     
@@ -196,7 +217,7 @@ if not st.session_state.credentials:
 
 # Load images button
 if st.session_state.credentials and st.session_state.image_urls is None:
-    if st.button("🔄 Load Images from Google Drive", type="primary", width="stretch"):
+    if st.button("🔄 Load Images from Google Drive", type="primary", use_container_width=True):
         with st.spinner("Connecting to Google Drive..."):
             try:
                 image_urls = get_image_urls_from_folder(
@@ -270,7 +291,7 @@ col_left, col_center, col_right = st.columns([1, 6, 1])
 with col_center:
     st.image(
         current_image_url, 
-        width="stretch",
+        use_column_width=True,
         caption=f"Image {st.session_state.current_index + 1} / {total_images}"
     )
 
