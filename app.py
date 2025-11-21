@@ -1,108 +1,148 @@
-# drive_utils.py
-import pickle, io, os, tempfile, re, json
-from google.oauth2.credentials import Credentials
-from google_auth_oauthlib.flow import Flow
-from googleapiclient.discovery import build
-from google.auth.transport.requests import Request
-from googleapiclient.errors import HttpError
+import streamlit as st
+import os
+import io
+import json
+import tempfile
 from pathlib import Path
+from PIL import Image
+from datetime import datetime
+import re
+from google.oauth2 import service_account
+from googleapiclient.discovery import build
+from googleapiclient.errors import HttpError
+
+# --- Page Configuration ---
+st.set_page_config(layout="wide", page_title="Drive Slideshow (Service Account)")
 
 IMAGE_EXT = [".jpg", ".jpeg", ".png", ".heic", ".gif", ".bmp", ".webp"]
 VIDEO_EXT = [".mp4", ".mov", ".m4v", ".avi", ".mkv", ".webm"]
-SCOPES = ['https://www.googleapis.com/auth/drive.readonly']
 
-class GDriveHelper:
-    def __init__(self, credentials_content, token_pickle=None):
-        self.credentials_content = credentials_content
-        self.token_pickle = token_pickle
-        self.creds = None
-        self.service = None
+def extract_folder_id(url):
+    match = re.search(r'id=([a-zA-Z0-9_-]+)', url)
+    if match:
+        return match.group(1)
+    match = re.search(r'/folders/([a-zA-Z0-9_-]+)', url)
+    if match:
+        return match.group(1)
+    return None
 
-    def authenticate(self, redirect_for_desktop=True):
-        if self.token_pickle:
-            try:
-                self.creds = pickle.loads(self.token_pickle)
-            except Exception:
-                self.token_pickle = None
+def build_drive_service(service_json_path):
+    creds = service_account.Credentials.from_service_account_file(
+        service_json_path,
+        scopes=["https://www.googleapis.com/auth/drive.readonly"]
+    )
+    return build('drive', 'v3', credentials=creds)
 
-        if self.creds and self.creds.expired and self.creds.refresh_token:
-            self.creds.refresh(Request())
-            self.token_pickle = pickle.dumps(self.creds)
-
-        if not self.creds or not self.creds.valid:
-            with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as temp_creds_file:
-                temp_creds_file.write(self.credentials_content)
-                temp_creds_path = temp_creds_file.name
-
-            try:
-                flow = Flow.from_client_secrets_file(
-                    temp_creds_path,
-                    scopes=SCOPES,
-                    redirect_uri='urn:ietf:wg:oauth:2.0:oob' if redirect_for_desktop else None
-                )
-                auth_url, _ = flow.authorization_url(prompt='consent')
-                # return auth_url for browser login
-                return auth_url, flow, temp_creds_path
-            finally:
-                os.unlink(temp_creds_path)
-        else:
-            self.service = build('drive', 'v3', credentials=self.creds)
-            return self.service
-
-    def build_service_after_auth(self, flow):
-        self.creds = flow.credentials
-        self.token_pickle = pickle.dumps(self.creds)
-        self.service = build('drive', 'v3', credentials=self.creds)
-        return self.service
-
-    def extract_folder_id(self, url):
-        if "id=" in url:
-            match = re.search(r'id=([a-zA-Z0-9_-]+)', url)
-            if match:
-                return match.group(1)
-        if "/folders/" in url:
-            match = re.search(r'/folders/([a-zA-Z0-9_-]+)', url)
-            if match:
-                return match.group(1)
-        return None
-
-    def list_files(self, folder_id):
-        files, page_token = [], None
-        while True:
-            query = f"'{folder_id}' in parents and trashed=false and (mimeType contains 'image/' or mimeType contains 'video/')"
-            results = self.service.files().list(
-                q=query, pageSize=50,
-                fields="nextPageToken, files(id, name, mimeType, size, createdTime, modifiedTime)", pageToken=page_token
+def list_drive_files(service, folder_id):
+    files = []
+    page_token = None
+    while True:
+        try:
+            query = f"'{folder_id}' in parents and trashed=false"
+            results = service.files().list(
+                q=query,
+                pageSize=100,
+                fields="nextPageToken, files(id, name, mimeType, size, createdTime, modifiedTime)",
+                pageToken=page_token
             ).execute()
             items = results.get('files', [])
             for item in items:
-                name = item['name']
-                ext = os.path.splitext(name)[1].lower()
+                ext = os.path.splitext(item['name'])[1].lower()
                 if ext in IMAGE_EXT + VIDEO_EXT:
                     files.append({
                         'id': item['id'],
-                        'name': name,
+                        'name': item['name'],
                         'ext': ext,
                         'size': item.get('size', 0),
-                        'mime_type': item.get('mimeType', ''),
                         'created': item.get('createdTime', ''),
                         'modified': item.get('modifiedTime', ''),
+                        'mime_type': item.get('mimeType', ''),
                         'source': 'gdrive'
                     })
             page_token = results.get('nextPageToken')
             if not page_token:
                 break
-        return files
+        except HttpError as e:
+            st.error(f"Google Drive API Error: {e.content.decode()}")
+            break
+    return files
 
-    def download_file(self, file_id, ext):
+def download_drive_file(service, file_id):
+    try:
         from googleapiclient.http import MediaIoBaseDownload
-        request = self.service.files().get_media(fileId=file_id)
+        request = service.files().get_media(fileId=file_id)
         file_content = io.BytesIO()
         downloader = MediaIoBaseDownload(file_content, request)
-        while True:
+        done = False
+        while not done:
             status, done = downloader.next_chunk()
-            if done:
-                break
         file_content.seek(0)
         return file_content
+    except Exception as e:
+        st.error(f"Error downloading file: {e}")
+        return None
 
+# --- Sidebar UI ---
+with st.sidebar:
+    st.header("Google Drive Service Account Mode")
+    st.write("""
+        1. Download a Service Account JSON from Google Cloud.
+        2. Share your Google Drive folder with the Service Account email (found in the JSON).
+        3. Upload Service Account JSON below.
+        4. Enter Drive folder URL and load.
+    """)
+    uploaded_json = st.file_uploader("Service Account JSON", type=["json"])
+    drive_url = st.text_input("Google Drive Folder URL")
+    duration = st.slider("Display Duration (sec)", 1, 30, 3)
+    st.divider()
+    st.session_state.loop_mode = st.checkbox("Loop Slideshow", value=True)
+
+    if uploaded_json:
+        with tempfile.NamedTemporaryFile(delete=False) as tmp_file:
+            tmp_file.write(uploaded_json.read())
+            service_json_path = tmp_file.name
+
+        service = build_drive_service(service_json_path)
+        folder_id = extract_folder_id(drive_url)
+        st.session_state.files = []
+        if folder_id and service:
+            if st.button("Load Files"):
+                st.session_state.files = list_drive_files(service, folder_id)
+                st.session_state.current_idx = 0
+                st.session_state.loaded = True
+        else:
+            st.info("Upload JSON and enter a valid Drive folder URL.")
+
+# --- Slideshow Content ---
+if not st.session_state.get('files', []):
+    st.warning("No files loaded. Please configure sidebar and click Load Files.")
+else:
+    files = st.session_state['files']
+    if 'current_idx' not in st.session_state:
+        st.session_state['current_idx'] = 0
+    idx = st.session_state['current_idx']
+    file = files[idx]
+    st.markdown(f"### File {idx + 1}/{len(files)}: {file['name']}")
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        if st.button("◀️ Prev"):
+            st.session_state['current_idx'] = (idx - 1) % len(files)
+            st.experimental_rerun()
+    with col3:
+        if st.button("▶️ Next"):
+            st.session_state['current_idx'] = (idx + 1) % len(files)
+            st.experimental_rerun()
+
+    # --- Display File ---
+    service = build_drive_service(service_json_path)
+    file_content = download_drive_file(service, file['id'])
+    if file_content:
+        if file['ext'] in IMAGE_EXT:
+            image = Image.open(file_content)
+            st.image(image, caption=file['name'], use_column_width=True)
+        elif file['ext'] in VIDEO_EXT:
+            with tempfile.NamedTemporaryFile(delete=False, suffix=file['ext']) as tmp_video:
+                tmp_video.write(file_content.read())
+                temp_path = tmp_video.name
+            st.video(temp_path)
+            os.unlink(temp_path)
