@@ -2,7 +2,6 @@ import streamlit as st
 import time
 import re
 from typing import List
-from datetime import datetime
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 import json
@@ -37,48 +36,63 @@ def get_drive_service(credentials_json):
     except Exception as e:
         raise Exception(f"Failed to create Drive service: {str(e)}")
 
-def get_image_urls_from_folder(folder_url: str, credentials_json: str = None) -> List[str]:
+def get_all_images_from_folder(folder_url: str, credentials_json: str) -> List[dict]:
     """
-    Get direct image URLs from a Google Drive folder.
+    Get ALL image files from a Google Drive folder with pagination.
     
     Args:
         folder_url: Google Drive folder URL or ID
-        credentials_json: Service account credentials JSON (optional)
+        credentials_json: Service account credentials JSON
         
     Returns:
-        List of direct image URLs
+        List of dicts with image info (id, name, url)
     """
     try:
         folder_id = extract_folder_id(folder_url)
     except ValueError as e:
         raise ValueError(f"Invalid folder URL: {e}")
     
-    # If no credentials provided, return empty list
     if not credentials_json:
-        return []
+        raise ValueError("Credentials required")
     
     try:
         service = get_drive_service(credentials_json)
         
-        # Query for image files in the folder
-        query = f"'{folder_id}' in parents and (mimeType contains 'image/')"
-        results = service.files().list(
-            q=query,
-            fields="files(id, name, mimeType, thumbnailLink, webContentLink)",
-            pageSize=100
-        ).execute()
+        all_images = []
+        page_token = None
         
-        files = results.get('files', [])
+        # Query for ALL image files in the folder with pagination
+        while True:
+            query = f"'{folder_id}' in parents and (mimeType contains 'image/') and trashed=false"
+            
+            results = service.files().list(
+                q=query,
+                fields="nextPageToken, files(id, name, mimeType, createdTime)",
+                pageSize=1000,  # Max page size
+                pageToken=page_token,
+                orderBy='createdTime'  # Order by creation time
+            ).execute()
+            
+            files = results.get('files', [])
+            
+            # Add each file to the list
+            for file in files:
+                file_id = file['id']
+                direct_url = f"https://drive.google.com/uc?export=view&id={file_id}"
+                all_images.append({
+                    'id': file_id,
+                    'name': file.get('name', 'Untitled'),
+                    'url': direct_url,
+                    'mime_type': file.get('mimeType', '')
+                })
+            
+            # Check if there are more pages
+            page_token = results.get('nextPageToken')
+            if not page_token:
+                break
         
-        # Convert to direct image URLs
-        image_urls = []
-        for file in files:
-            file_id = file['id']
-            # Use direct download link
-            direct_url = f"https://drive.google.com/uc?export=view&id={file_id}"
-            image_urls.append(direct_url)
+        return all_images
         
-        return image_urls
     except Exception as e:
         raise Exception(f"Error fetching images from Drive: {str(e)}")
 
@@ -99,8 +113,9 @@ def init_session_state():
         'credentials': None,
         'current_index': 0,
         'auto_play': True,
-        'image_urls': None,
-        'credentials_loaded': False
+        'images': None,  # Changed to store full image info
+        'credentials_loaded': False,
+        'loading_complete': False
     }
     for key, default_value in defaults.items():
         if key not in st.session_state:
@@ -136,6 +151,14 @@ st.markdown("""
         border-radius: 8px;
         margin-bottom: 20px;
     }
+    
+    .image-name {
+        text-align: center;
+        font-size: 14px;
+        color: #666;
+        margin-top: 10px;
+        font-style: italic;
+    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -154,7 +177,8 @@ with st.sidebar:
     uploaded_file = st.file_uploader(
         "Upload Service Account JSON",
         type=['json'],
-        help="Upload your Google Drive service account credentials file"
+        help="Upload your Google Drive service account credentials file",
+        key='creds_uploader'
     )
     
     if uploaded_file is not None:
@@ -162,17 +186,24 @@ with st.sidebar:
             credentials_json = uploaded_file.read().decode('utf-8')
             st.session_state.credentials = credentials_json
             st.session_state.credentials_loaded = True
+            st.session_state.loading_complete = False  # Reset loading flag
             st.success("✅ Credentials loaded!")
         except Exception as e:
             st.error(f"❌ Error loading credentials: {str(e)}")
             st.session_state.credentials = None
             st.session_state.credentials_loaded = False
-    elif st.session_state.get('credentials_loaded', False):
-        st.info("✅ Credentials already loaded")
-        if st.button("🗑️ Clear Credentials"):
+    
+    # Show status if credentials are loaded
+    if st.session_state.get('credentials_loaded', False):
+        if st.session_state.images:
+            st.info(f"✅ {len(st.session_state.images)} images loaded")
+        
+        if st.button("🗑️ Clear Credentials & Reset"):
             st.session_state.credentials = None
             st.session_state.credentials_loaded = False
-            st.session_state.image_urls = None
+            st.session_state.images = None
+            st.session_state.loading_complete = False
+            st.session_state.current_index = 0
             st.rerun()
     
     st.divider()
@@ -187,12 +218,14 @@ with st.sidebar:
     
     auto_loop = st.checkbox("Auto Loop", value=True)
     
+    show_filenames = st.checkbox("Show Filenames", value=True)
+    
     st.divider()
     
     st.caption("💡 **Instructions:**")
     st.caption("1. Upload service account JSON")
-    st.caption("2. Grant the service account email access to the Google Drive folder")
-    st.caption("3. Click 'Load Images' to start")
+    st.caption("2. Images will load automatically")
+    st.caption("3. Service account needs Viewer access")
 
 # ==================== MAIN APP ====================
 
@@ -204,50 +237,57 @@ st.markdown("""
 </div>
 """, unsafe_allow_html=True)
 
+# Check credentials
 if not st.session_state.credentials:
     st.warning("⚠️ **Step 1:** Upload service account JSON file in the sidebar")
     st.info("""
-    **Why images aren't showing in Streamlit Community:**
+    **Setup Instructions:**
     
-    - The service account credentials file must be uploaded each session
-    - The service account email must have **Viewer** access to the Google Drive folder
-    - Check that the folder URL is correct and publicly shared OR shared with your service account email
+    1. Upload your service account credentials JSON file
+    2. Make sure the service account email has **Viewer** access to the Google Drive folder
+    3. Images will load automatically once credentials are provided
     """)
     st.stop()
 
-# Load images button
-if st.session_state.credentials and st.session_state.image_urls is None:
-    if st.button("🔄 Load Images from Google Drive", type="primary", use_container_width=True):
-        with st.spinner("Connecting to Google Drive..."):
-            try:
-                image_urls = get_image_urls_from_folder(
-                    FOLDER_URL, 
-                    st.session_state.credentials
-                )
-                if image_urls:
-                    st.session_state.image_urls = image_urls
-                    st.success(f"✅ Successfully loaded {len(image_urls)} images!")
-                    time.sleep(1)
-                    st.rerun()
-                else:
-                    st.warning("⚠️ No images found in folder")
-                    st.info("Make sure the service account has access to the folder")
-            except Exception as e:
-                st.error(f"❌ Error: {str(e)}")
-                st.info("""
-                **Troubleshooting:**
-                - Verify the service account email has access to the folder
-                - Check that the credentials JSON file is valid
-                - Ensure the folder contains image files
-                """)
+# AUTO-LOAD images when credentials are available
+if st.session_state.credentials and not st.session_state.loading_complete:
+    with st.spinner("🔄 Loading all images from Google Drive..."):
+        try:
+            images = get_all_images_from_folder(
+                FOLDER_URL, 
+                st.session_state.credentials
+            )
+            if images:
+                st.session_state.images = images
+                st.session_state.loading_complete = True
+                st.success(f"✅ Successfully loaded {len(images)} images!")
+                time.sleep(1)
+                st.rerun()
+            else:
+                st.warning("⚠️ No images found in folder")
+                st.info("Make sure the service account has access to the folder and it contains image files")
+                st.stop()
+        except Exception as e:
+            st.error(f"❌ Error: {str(e)}")
+            st.info("""
+            **Troubleshooting:**
+            - Verify the service account email has Viewer access to the folder
+            - Check that the credentials JSON file is valid
+            - Ensure the folder contains image files
+            - Folder ID should be correct in the URL
+            """)
+            if st.button("🔄 Retry Loading"):
+                st.session_state.loading_complete = False
+                st.rerun()
+            st.stop()
 
 # Check if images are loaded
-if st.session_state.image_urls is None:
-    st.info("👆 Click 'Load Images' button above to fetch photos from Google Drive")
+if not st.session_state.images:
+    st.info("Loading images...")
     st.stop()
 
-image_urls = st.session_state.image_urls
-total_images = len(image_urls)
+images = st.session_state.images
+total_images = len(images)
 
 if total_images == 0:
     st.error("No images found in the folder")
@@ -259,23 +299,28 @@ col1, col2, col3, col4, col5 = st.columns(5)
 with col1:
     if st.button("⏮️ First"):
         st.session_state.current_index = 0
+        st.rerun()
 
 with col2:
     if st.button("◀️ Previous"):
         st.session_state.current_index = (st.session_state.current_index - 1) % total_images
+        st.rerun()
 
 with col3:
     play_text = "⏸️ Pause" if st.session_state.auto_play else "▶️ Play"
     if st.button(play_text):
         st.session_state.auto_play = not st.session_state.auto_play
+        st.rerun()
 
 with col4:
     if st.button("▶️ Next"):
         st.session_state.current_index = (st.session_state.current_index + 1) % total_images
+        st.rerun()
 
 with col5:
     if st.button("⏭️ Last"):
         st.session_state.current_index = total_images - 1
+        st.rerun()
 
 # Progress bar
 progress = (st.session_state.current_index + 1) / total_images
@@ -284,7 +329,9 @@ st.progress(progress, text=f"Image {st.session_state.current_index + 1} of {tota
 st.markdown("---")
 
 # Display current image
-current_image_url = image_urls[st.session_state.current_index]
+current_image = images[st.session_state.current_index]
+current_image_url = current_image['url']
+current_image_name = current_image['name']
 
 col_left, col_center, col_right = st.columns([1, 6, 1])
 
@@ -294,6 +341,9 @@ with col_center:
         use_column_width=True,
         caption=f"Image {st.session_state.current_index + 1} / {total_images}"
     )
+    
+    if show_filenames:
+        st.markdown(f'<div class="image-name">📄 {current_image_name}</div>', unsafe_allow_html=True)
 
 # Status info
 info_col1, info_col2, info_col3 = st.columns(3)
@@ -309,7 +359,14 @@ with info_col3:
     st.info(f"🔄 Loop: {'On' if auto_loop else 'Off'}")
 
 # Auto-advance logic
-if st.session_state.auto_play and auto_loop:
+if st.session_state.auto_play:
     time.sleep(slide_interval)
-    st.session_state.current_index = (st.session_state.current_index + 1) % total_images
+    if auto_loop:
+        st.session_state.current_index = (st.session_state.current_index + 1) % total_images
+    else:
+        # Stop at the end if loop is off
+        if st.session_state.current_index < total_images - 1:
+            st.session_state.current_index += 1
+        else:
+            st.session_state.auto_play = False
     st.rerun()
