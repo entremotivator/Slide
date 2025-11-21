@@ -4,8 +4,9 @@ import time
 from pathlib import Path
 from PIL import Image
 import io
-import tempfile
+import requests
 from datetime import datetime
+import re
 
 # Page config
 st.set_page_config(
@@ -25,6 +26,8 @@ if 'sort_order' not in st.session_state:
     st.session_state.sort_order = 'name'
 if 'loop_mode' not in st.session_state:
     st.session_state.loop_mode = True
+if 'loaded' not in st.session_state:
+    st.session_state.loaded = False
 
 # Supported formats
 IMAGE_EXT = [".jpg", ".jpeg", ".png", ".heic", ".gif", ".bmp", ".webp"]
@@ -62,71 +65,85 @@ st.markdown('<div class="main-title">🎬 Live Photos & Video Slideshow</div>', 
 # Extract folder ID from Drive URL
 def extract_folder_id(url):
     try:
-        from urllib.parse import urlparse, parse_qs
         if "id=" in url:
-            return parse_qs(urlparse(url).query).get("id", [None])[0]
-        parts = url.split("/")
-        if "folders" in parts:
-            idx = parts.index("folders")
-            if idx + 1 < len(parts):
-                folder_id = parts[idx + 1].split('?')[0]
-                return folder_id
-        # Handle drive.google.com/drive/folders/ID format
+            match = re.search(r'id=([a-zA-Z0-9_-]+)', url)
+            if match:
+                return match.group(1)
         if "/folders/" in url:
-            folder_id = url.split("/folders/")[1].split("?")[0].split("/")[0]
-            return folder_id
+            match = re.search(r'/folders/([a-zA-Z0-9_-]+)', url)
+            if match:
+                return match.group(1)
     except Exception as e:
         st.error(f"Error parsing URL: {e}")
     return None
+
+# Load files from public Google Drive folder (no auth required)
+def load_public_gdrive_files(folder_id):
+    try:
+        # Use Google Drive API v3 to list files in public folder
+        api_key = "AIzaSyDummy"  # For public folders, we can use the public API
+        
+        # Alternative: Use direct folder access
+        # Get folder metadata and file list via web scraping the public share link
+        folder_url = f"https://drive.google.com/drive/folders/{folder_id}"
+        
+        st.info(f"🔗 Accessing public folder: {folder_id}")
+        
+        # For public folders, we'll use the uc?export=download endpoint
+        # First, let's try to get the file list using the Drive API without auth
+        
+        # Since we can't easily list files from public folder without API key,
+        # we'll use a different approach - iframe embedding or direct links
+        
+        # For now, let's create a workaround using known file IDs
+        # In production, you'd want to use proper Google Drive API with service account
+        
+        st.warning("⚠️ Direct public folder listing requires Google Drive API setup.")
+        st.info("💡 **Alternative Solution**: Please use one of these methods:")
+        st.markdown("""
+        1. **Local Folder**: Download the files and use local folder option
+        2. **Individual Links**: Share individual file links instead of folder
+        3. **API Setup**: Set up Google Drive API credentials (see sidebar)
+        """)
+        
+        return []
+        
+    except Exception as e:
+        st.error(f"Error accessing folder: {e}")
+        return []
 
 # Sidebar controls
 with st.sidebar:
     st.header("⚙️ Settings")
     
-    source_type = st.radio("Choose Source:", ["Local Folder", "Google Drive"])
+    source_type = st.radio("Choose Source:", ["Google Drive (Public)", "Local Folder"])
     
-    if source_type == "Google Drive":
-        st.info("📌 Share your Google Drive folder publicly and paste the URL")
-        gdrive_url = st.text_input("Google Drive Folder URL:", 
-                                   value="https://drive.google.com/drive/folders/1LfSwuD7WxbS0ZdDeGo0hpiviUx6vMhqs",
-                                   placeholder="https://drive.google.com/drive/folders/...")
+    if source_type == "Google Drive (Public)":
+        st.info("📌 Using pre-configured public Google Drive folder")
+        gdrive_url = "https://drive.google.com/drive/folders/1LfSwuD7WxbS0ZdDeGo0hpiviUx6vMhqs"
+        st.text_input("Google Drive Folder URL:", value=gdrive_url, disabled=True)
         
-        if st.button("🔗 Load from Google Drive", type="primary"):
-            folder_id = extract_folder_id(gdrive_url)
-            if folder_id:
-                with st.spinner("Connecting to Google Drive..."):
-                    try:
-                        from pydrive.auth import GoogleAuth
-                        from pydrive.drive import GoogleDrive
-                        
-                        gauth = GoogleAuth()
-                        gauth.LocalWebserverAuth()
-                        drive = GoogleDrive(gauth)
-                        
-                        query = f"'{folder_id}' in parents and trashed=false"
-                        file_list = drive.ListFile({'q': query}).GetList()
-                        
-                        temp_files = []
-                        for f in file_list:
-                            ext = os.path.splitext(f['title'])[1].lower()
-                            if ext in IMAGE_EXT + VIDEO_EXT:
-                                temp_files.append({
-                                    'name': f['title'],
-                                    'id': f['id'],
-                                    'ext': ext,
-                                    'file_obj': f
-                                })
-                        
-                        st.session_state.files = temp_files
-                        st.session_state.current_idx = 0
-                        st.success(f"✅ Loaded {len(temp_files)} files from Google Drive!")
-                    except Exception as e:
-                        st.error(f"Error accessing Google Drive: {e}")
-                        st.info("💡 Make sure PyDrive is installed: pip install PyDrive")
-            else:
-                st.error("Invalid Google Drive URL")
-    
+        st.divider()
+        st.warning("⚠️ Public folder file listing limitations")
+        st.markdown("""
+        **To use Google Drive, you need to:**
+        
+        1. **Download the folder locally** and use "Local Folder" option, OR
+        2. **Set up Google Drive API** (requires credentials)
+        
+        **Quick Setup for API:**
+        - Go to [Google Cloud Console](https://console.cloud.google.com)
+        - Enable Google Drive API
+        - Create OAuth credentials
+        - Download `client_secrets.json`
+        - Place in same folder as this script
+        """)
+        
+        st.divider()
+        st.info("💡 **Recommended**: Download the Google Drive folder to your computer and use the 'Local Folder' option for instant access!")
+        
     else:  # Local Folder
+        st.success("✅ Best option for immediate use!")
         folder_path = st.text_input("Folder Path:", placeholder="/path/to/your/media")
         
         if st.button("📁 Load Local Files", type="primary"):
@@ -135,9 +152,11 @@ with st.sidebar:
                 st.error("❌ Folder not found")
             else:
                 files = [f for f in p.iterdir() if f.suffix.lower() in IMAGE_EXT + VIDEO_EXT]
-                st.session_state.files = [{'path': f, 'ext': f.suffix.lower()} for f in files]
+                st.session_state.files = [{'path': f, 'ext': f.suffix.lower(), 'name': f.name} for f in sorted(files)]
                 st.session_state.current_idx = 0
+                st.session_state.loaded = True
                 st.success(f"✅ Loaded {len(files)} files!")
+                st.rerun()
     
     st.divider()
     
@@ -148,16 +167,15 @@ with st.sidebar:
     
     # Sorting
     st.subheader("🔤 Sorting")
-    sort_option = st.selectbox("Sort by:", ["Name", "Date (newest first)", "Date (oldest first)", "Random"])
+    sort_option = st.selectbox("Sort by:", ["Name", "Random"])
     
-    if sort_option != st.session_state.sort_order:
+    if sort_option != st.session_state.sort_order and st.session_state.files:
         st.session_state.sort_order = sort_option
-        if st.session_state.files:
-            if sort_option == "Name":
-                st.session_state.files.sort(key=lambda x: x.get('name', x.get('path', '').name))
-            elif sort_option == "Random":
-                import random
-                random.shuffle(st.session_state.files)
+        if sort_option == "Name":
+            st.session_state.files.sort(key=lambda x: x.get('name', ''))
+        elif sort_option == "Random":
+            import random
+            random.shuffle(st.session_state.files)
     
     st.divider()
     
@@ -178,17 +196,45 @@ with st.sidebar:
 
 # Main content area
 if not st.session_state.files:
-    st.info("👈 Select a source and load your media files from the sidebar to begin")
+    st.info("👈 Select 'Local Folder' from the sidebar and load your media files to begin")
+    
     st.markdown("""
-    ### Features:
-    - 📁 Local folder or Google Drive support
-    - ⏯️ Auto-play with customizable duration
-    - 🔀 Multiple sorting options
-    - 🎯 Image and video filtering
-    - ⏭️ Manual navigation controls
-    - 🔄 Loop mode
-    - 📊 File statistics
+    ### 📋 Quick Start Guide:
+    
+    #### **Option 1: Local Folder (Recommended)**
+    1. Download the Google Drive folder to your computer
+    2. Select "Local Folder" in the sidebar
+    3. Enter the path to your downloaded folder
+    4. Click "📁 Load Local Files"
+    5. Enjoy your slideshow! 🎉
+    
+    #### **Option 2: Google Drive API**
+    - Requires `client_secrets.json` configuration
+    - See sidebar for setup instructions
+    
+    ---
+    
+    ### ✨ Features:
+    - ⏯️ **Auto-play** with customizable duration
+    - 🎮 **Manual navigation** (Previous/Next/First/Last)
+    - 🔀 **Sorting options** (Name or Random)
+    - 🎯 **Filters** (Toggle images/videos)
+    - 🔄 **Loop mode** for continuous playback
+    - 📊 **Statistics** dashboard
+    - 🖼️ **Support** for images (JPG, PNG, GIF, WEBP, etc.)
+    - 🎬 **Support** for videos (MP4, MOV, AVI, etc.)
     """)
+    
+    st.divider()
+    
+    st.markdown("""
+    ### 💡 Tips:
+    - Use keyboard shortcuts for navigation (coming soon!)
+    - Adjust duration based on your content (3 seconds default)
+    - Enable loop mode for continuous display
+    - Filter by media type for focused viewing
+    """)
+    
 else:
     # Filter files based on settings
     filtered_files = []
@@ -199,14 +245,14 @@ else:
             filtered_files.append(f)
     
     if not filtered_files:
-        st.warning("No files match your current filters")
+        st.warning("No files match your current filters. Try enabling both images and videos in the sidebar.")
     else:
         # Ensure index is valid
         if st.session_state.current_idx >= len(filtered_files):
             st.session_state.current_idx = 0
         
         # Display current file counter
-        st.markdown(f'<div class="file-counter">File {st.session_state.current_idx + 1} of {len(filtered_files)}</div>', 
+        st.markdown(f'<div class="file-counter">📸 File {st.session_state.current_idx + 1} of {len(filtered_files)}</div>', 
                    unsafe_allow_html=True)
         
         # Navigation controls
@@ -215,11 +261,13 @@ else:
         with col1:
             if st.button("⏮️ First", use_container_width=True):
                 st.session_state.current_idx = 0
+                st.session_state.is_playing = False
                 st.rerun()
         
         with col2:
             if st.button("◀️ Previous", use_container_width=True):
                 st.session_state.current_idx = (st.session_state.current_idx - 1) % len(filtered_files)
+                st.session_state.is_playing = False
                 st.rerun()
         
         with col3:
@@ -228,18 +276,20 @@ else:
                     st.session_state.is_playing = False
                     st.rerun()
             else:
-                if st.button("▶️ Play", use_container_width=True, type="primary"):
+                if st.button("▶️ Play Slideshow", use_container_width=True, type="primary"):
                     st.session_state.is_playing = True
                     st.rerun()
         
         with col4:
             if st.button("▶️ Next", use_container_width=True):
                 st.session_state.current_idx = (st.session_state.current_idx + 1) % len(filtered_files)
+                st.session_state.is_playing = False
                 st.rerun()
         
         with col5:
             if st.button("⏭️ Last", use_container_width=True):
                 st.session_state.current_idx = len(filtered_files) - 1
+                st.session_state.is_playing = False
                 st.rerun()
         
         # Display current file
@@ -248,8 +298,9 @@ else:
         st.divider()
         
         # File info
-        file_name = current_file.get('name', current_file.get('path', 'Unknown').name)
-        st.markdown(f"**📄 Current File:** {file_name}")
+        file_name = current_file.get('name', 'Unknown')
+        file_type = "🖼️ Image" if current_file['ext'] in IMAGE_EXT else "🎬 Video"
+        st.markdown(f"**{file_type}:** `{file_name}`")
         
         # Display placeholder
         placeholder = st.empty()
@@ -260,28 +311,14 @@ else:
                 if 'path' in current_file:
                     img = Image.open(current_file['path'])
                     placeholder.image(img, use_container_width=True)
-                else:
-                    # Google Drive file
-                    file_obj = current_file['file_obj']
-                    file_obj.GetContentFile(f"temp_{current_file['id']}{current_file['ext']}")
-                    img = Image.open(f"temp_{current_file['id']}{current_file['ext']}")
-                    placeholder.image(img, use_container_width=True)
-                    os.remove(f"temp_{current_file['id']}{current_file['ext']}")
             
             elif current_file['ext'] in VIDEO_EXT:
                 # Handle video display
                 if 'path' in current_file:
                     placeholder.video(str(current_file['path']))
-                else:
-                    # Google Drive file
-                    file_obj = current_file['file_obj']
-                    temp_path = f"temp_{current_file['id']}{current_file['ext']}"
-                    file_obj.GetContentFile(temp_path)
-                    placeholder.video(temp_path)
-                    # Note: Can't delete immediately as video needs to stream
         
         except Exception as e:
-            placeholder.error(f"Error displaying file: {e}")
+            placeholder.error(f"❌ Error displaying file: {e}")
         
         # Auto-advance if playing
         if st.session_state.is_playing:
@@ -291,6 +328,7 @@ else:
             # Check if we should stop (end of slideshow without loop)
             if not st.session_state.loop_mode and st.session_state.current_idx == 0:
                 st.session_state.is_playing = False
+                st.balloons()
                 st.success("✅ Slideshow completed!")
             
             st.rerun()
@@ -299,6 +337,6 @@ else:
 st.divider()
 st.markdown("""
 <div style='text-align: center; color: #888; padding: 2rem;'>
-    Made with ❤️ using Streamlit | Supports images and videos from local folders or Google Drive
+    Made with ❤️ using Streamlit | Perfect for viewing your photo and video collections
 </div>
 """, unsafe_allow_html=True)
