@@ -126,78 +126,24 @@ st.markdown("""
 with st.sidebar:
     st.title("🔧 Configuration")
     
-    st.subheader("📁 Google Drive Service File")
+    st.subheader("📁 Google Drive Folder")
+    st.code(FOLDER_URL, language="text")
+    
+    st.divider()
+    
+    st.subheader("🔑 Service Account Credentials")
     
     # File uploader for service account JSON
     uploaded_file = st.file_uploader(
         "Upload Service Account JSON",
         type=['json'],
-        help="Upload your Google Drive service account credentials"
+        help="Upload your Google Drive service account credentials file"
     )
     
     if uploaded_file is not None:
         credentials_json = uploaded_file.read().decode('utf-8')
         st.session_state.credentials = credentials_json
         st.success("✅ Credentials loaded!")
-    
-    st.divider()
-    
-    # Display the service code
-    with st.expander("📄 View Service Code", expanded=True):
-        service_code = """import re
-from typing import List
-from google.oauth2 import service_account
-from googleapiclient.discovery import build
-import json
-
-def extract_folder_id(url: str) -> str:
-    '''Extract folder ID from Google Drive URL.'''
-    patterns = [
-        r'/folders/([a-zA-Z0-9_-]+)',
-        r'id=([a-zA-Z0-9_-]+)',
-        r'^([a-zA-Z0-9_-]+)$'
-    ]
-    
-    for pattern in patterns:
-        match = re.search(pattern, url)
-        if match:
-            return match.group(1)
-    
-    raise ValueError(f"Could not extract folder ID")
-
-def get_drive_service(credentials_json):
-    '''Create Google Drive service.'''
-    credentials_dict = json.loads(credentials_json)
-    credentials = service_account.Credentials.from_service_account_info(
-        credentials_dict,
-        scopes=['https://www.googleapis.com/auth/drive.readonly']
-    )
-    service = build('drive', 'v3', credentials=credentials)
-    return service
-
-def get_image_urls_from_folder(folder_url: str, 
-                                credentials_json: str) -> List[str]:
-    '''Get direct image URLs from Google Drive folder.'''
-    folder_id = extract_folder_id(folder_url)
-    service = get_drive_service(credentials_json)
-    
-    query = f"'{folder_id}' in parents and (mimeType contains 'image/')"
-    results = service.files().list(
-        q=query,
-        fields="files(id, name, mimeType)",
-        pageSize=100
-    ).execute()
-    
-    files = results.get('files', [])
-    image_urls = []
-    for file in files:
-        file_id = file['id']
-        url = f"https://drive.google.com/uc?export=view&id={file_id}"
-        image_urls.append(url)
-    
-    return image_urls
-"""
-        st.code(service_code, language="python", line_numbers=True)
     
     st.divider()
     
@@ -213,7 +159,10 @@ def get_image_urls_from_folder(folder_url: str,
     
     st.divider()
     
-    st.caption("💡 Upload service account JSON to load images from Google Drive")
+    st.caption("💡 **Instructions:**")
+    st.caption("1. Upload service account JSON")
+    st.caption("2. Grant the service account email access to the Google Drive folder")
+    st.caption("3. Click 'Load Images' to start")
 
 # ==================== MAIN APP ====================
 
@@ -225,7 +174,16 @@ st.markdown("""
 </div>
 """, unsafe_allow_html=True)
 
-st.info(f"📁 **Folder:** `{FOLDER_URL}`")
+if not st.session_state.credentials:
+    st.warning("⚠️ **Step 1:** Upload service account JSON file in the sidebar")
+    st.info("""
+    **Why images aren't showing in Streamlit Community:**
+    
+    - The service account credentials file must be uploaded each session
+    - The service account email must have **Viewer** access to the Google Drive folder
+    - Check that the folder URL is correct and publicly shared OR shared with your service account email
+    """)
+    st.stop()
 
 # Initialize session state
 if 'current_index' not in st.session_state:
@@ -234,13 +192,11 @@ if 'auto_play' not in st.session_state:
     st.session_state.auto_play = auto_loop
 if 'image_urls' not in st.session_state:
     st.session_state.image_urls = None
-if 'credentials' not in st.session_state:
-    st.session_state.credentials = None
 
 # Load images button
 if st.session_state.credentials and st.session_state.image_urls is None:
-    if st.button("🔄 Load Images from Google Drive", type="primary"):
-        with st.spinner("Loading images..."):
+    if st.button("🔄 Load Images from Google Drive", type="primary", use_container_width=True):
+        with st.spinner("Connecting to Google Drive..."):
             try:
                 image_urls = get_image_urls_from_folder(
                     FOLDER_URL, 
@@ -248,22 +204,24 @@ if st.session_state.credentials and st.session_state.image_urls is None:
                 )
                 if image_urls:
                     st.session_state.image_urls = image_urls
-                    st.success(f"✅ Loaded {len(image_urls)} images!")
+                    st.success(f"✅ Successfully loaded {len(image_urls)} images!")
                     time.sleep(1)
                     st.rerun()
                 else:
-                    st.warning("No images found in folder")
+                    st.warning("⚠️ No images found in folder")
+                    st.info("Make sure the service account has access to the folder")
             except Exception as e:
-                st.error(f"Error: {str(e)}")
-
-# Show instructions if no credentials
-if not st.session_state.credentials:
-    st.warning("⚠️ Please upload service account JSON file in the sidebar to load images from Google Drive")
-    st.stop()
+                st.error(f"❌ Error: {str(e)}")
+                st.info("""
+                **Troubleshooting:**
+                - Verify the service account email has access to the folder
+                - Check that the credentials JSON file is valid
+                - Ensure the folder contains image files
+                """)
 
 # Check if images are loaded
 if st.session_state.image_urls is None:
-    st.info("Click 'Load Images' button above to fetch photos from Google Drive")
+    st.info("👆 Click 'Load Images' button above to fetch photos from Google Drive")
     st.stop()
 
 image_urls = st.session_state.image_urls
