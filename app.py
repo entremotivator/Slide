@@ -92,6 +92,15 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
+if 'credentials' not in st.session_state:
+    st.session_state.credentials = None
+if 'current_index' not in st.session_state:
+    st.session_state.current_index = 0
+if 'auto_play' not in st.session_state:
+    st.session_state.auto_play = True
+if 'image_urls' not in st.session_state:
+    st.session_state.image_urls = None
+
 # Hardcoded Google Drive folder URL
 FOLDER_URL = "https://drive.google.com/drive/folders/1LfSwuD7WxbS0ZdDeGo0hpiviUx6vMhqs?usp=sharing"
 
@@ -185,17 +194,9 @@ if not st.session_state.credentials:
     """)
     st.stop()
 
-# Initialize session state
-if 'current_index' not in st.session_state:
-    st.session_state.current_index = 0
-if 'auto_play' not in st.session_state:
-    st.session_state.auto_play = auto_loop
-if 'image_urls' not in st.session_state:
-    st.session_state.image_urls = None
-
 # Load images button
 if st.session_state.credentials and st.session_state.image_urls is None:
-    if st.button("🔄 Load Images from Google Drive", type="primary", use_container_width=True):
+    if st.button("🔄 Load Images from Google Drive", type="primary", width="stretch"):
         with st.spinner("Connecting to Google Drive..."):
             try:
                 image_urls = get_image_urls_from_folder(
@@ -269,7 +270,7 @@ col_left, col_center, col_right = st.columns([1, 6, 1])
 with col_center:
     st.image(
         current_image_url, 
-        use_container_width=True,
+        width="stretch",
         caption=f"Image {st.session_state.current_index + 1} / {total_images}"
     )
 
